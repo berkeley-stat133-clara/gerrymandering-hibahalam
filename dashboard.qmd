@@ -1,5 +1,255 @@
 ---
-title: Dashboard
+title: California Gerrymandering Dashboard
 format: dashboard
+code-fold: true
+theme: flatly
 ---
 
+
+```{r}
+#| label: setup
+#| message: false
+library(tidyverse)
+library(sf) 
+
+wasted_votes <- function(votes_A, votes_B) {
+total  <- votes_A + votes_B
+needed <- floor(total / 2) + 1
+
+ifelse(
+votes_A > votes_B,
+votes_A - needed,   # winner
+votes_A             # loser
+)
+}
+```
+
+
+```{r}
+#| label: load-data
+
+vote_prec <- read_csv("data/vote_prec_clean.csv")
+
+ab604_results <- read_csv("data/new_results_area_weighted.csv")
+
+
+# Drop total rows and non-district rows
+
+vote_prec_use <- vote_prec |>
+filter(!str_detect(svprec, "TOT")) |>
+filter(cddist > 0)
+
+# Make sure numeric
+
+vote_prec_use <- vote_prec_use |>
+mutate(
+demvote = as.numeric(demvote),
+repvote = as.numeric(repvote)
+)
+
+district_old <- vote_prec_use |>
+group_by(cddist) |>
+summarize(
+dem_total   = sum(demvote, na.rm = TRUE),
+rep_total   = sum(repvote, na.rm = TRUE),
+two_party_total = dem_total + rep_total,
+.groups = "drop"
+) |>
+mutate(
+dem_share = dem_total / two_party_total,
+winner = case_when(
+dem_total > rep_total ~ "Dem",
+rep_total > dem_total ~ "Rep",
+TRUE                  ~ "Tie"
+)
+)
+
+# Only D vs R districts for metrics
+
+district_old_two_party <- district_old |>
+filter(dem_total > 0, rep_total > 0)
+
+# Mean–median (old map)
+
+mean_dem_share_old   <- mean(district_old_two_party$dem_share)
+median_dem_share_old <- median(district_old_two_party$dem_share)
+mean_median_old      <- mean_dem_share_old - median_dem_share_old
+
+# Efficiency gap (old map)
+
+district_old_two_party <- district_old_two_party |>
+mutate(
+wasted_dem = wasted_votes(dem_total, rep_total),
+wasted_rep = wasted_votes(rep_total, dem_total)
+)
+
+total_wasted_dem_old <- sum(district_old_two_party$wasted_dem)
+total_wasted_rep_old <- sum(district_old_two_party$wasted_rep)
+total_two_party_old  <- sum(district_old_two_party$two_party_total)
+
+eff_gap_old <- (total_wasted_rep_old - total_wasted_dem_old) / total_two_party_old
+
+seats_old <- district_old |>
+count(winner, name = "n_seats") |>
+mutate(plan = "2011/2024 Map")
+
+seats_old
+
+```
+
+
+```{r}
+#| label: metrics-new
+
+# ---------- NEW MAP (AB 604): metrics ----------
+
+ab604_results <- ab604_results |>
+mutate(
+two_party_total_new = dem_total_new + rep_total_new,
+dem_share_new = dem_total_new / two_party_total_new,
+winner_new = case_when(
+dem_total_new > rep_total_new ~ "Dem",
+rep_total_new > dem_total_new ~ "Rep",
+TRUE                          ~ "Tie"
+)
+)
+
+ab604_two_party <- ab604_results |>
+filter(dem_total_new > 0, rep_total_new > 0)
+
+# Mean–median (new map)
+
+mean_dem_share_new   <- mean(ab604_two_party$dem_share_new)
+median_dem_share_new <- median(ab604_two_party$dem_share_new)
+mean_median_new      <- mean_dem_share_new - median_dem_share_new
+
+# Efficiency gap (new map)
+
+ab604_two_party <- ab604_two_party |>
+mutate(
+wasted_dem_new = wasted_votes(dem_total_new, rep_total_new),
+wasted_rep_new = wasted_votes(rep_total_new, dem_total_new)
+)
+
+total_wasted_dem_new <- sum(ab604_two_party$wasted_dem_new)
+total_wasted_rep_new <- sum(ab604_two_party$wasted_rep_new)
+total_two_party_new  <- sum(ab604_two_party$two_party_total_new)
+
+eff_gap_new <- (total_wasted_rep_new - total_wasted_dem_new) / total_two_party_new
+
+# Seat counts (new map)
+
+seats_new <- ab604_results |>
+count(winner_new, name = "n_seats") |>
+mutate(plan = "AB 604 Map")
+
+seats_new
+
+```
+
+
+```{r}
+#| label: summary-table
+
+# Combined summary table of metrics (for both maps)
+
+summary_metrics <- tibble(
+plan            = c("2011/2024 Map", "AB 604 Map"),
+dem_seats       = c(
+seats_old |> filter(winner == "Dem") |> pull(n_seats),
+seats_new |> filter(winner_new == "Dem") |> pull(n_seats)
+),
+rep_seats       = c(
+seats_old |> filter(winner == "Rep") |> pull(n_seats),
+seats_new |> filter(winner_new == "Rep") |> pull(n_seats)
+),
+mean_median     = c(mean_median_old, mean_median_new),
+efficiency_gap  = c(eff_gap_old, eff_gap_new)
+)
+
+summary_metrics
+
+```
+
+
+```{r}
+#| label: summary-table-format
+summary_metrics |>
+mutate(
+mean_median    = round(mean_median, 3),
+efficiency_gap = round(efficiency_gap, 3)
+)
+
+```
+
+
+```{r}
+#| label: load-shapefiles
+
+# ---------- Load 2024 Congressional District shapefile (Census) ----------
+
+
+cd_2024 <- st_read("data/shapefiles/tl_2024_06_cd119/tl_2024_06_cd119.shp")
+
+cd_2024_ca <- cd_2024 |>
+filter(str_starts(GEOID, "06"))
+
+cd_2024_ca <- cd_2024_ca |>
+mutate(
+cddist = as.integer(str_sub(GEOID, 3, 4))
+)
+
+cd_old_joined <- cd_2024_ca |>
+left_join(district_old, by = "cddist")
+
+ab604_shp <- st_read("data/shapefiles/AB604/AB604.shp")
+
+names(ab604_shp)
+
+ab604_shp <- ab604_shp |>
+rename(new_cddist = matches("cd|dist", ignore.case = TRUE))
+
+cd_new_joined <- ab604_shp |>
+left_join(ab604_results, by = "new_cddist")
+
+```
+
+
+```{r}
+#| label: plot-maps
+#| fig-width: 10
+#| fig-height: 5
+
+combined_sf <- NULL
+
+dist_col <- names(ab604_shp)[str_detect(names(ab604_shp), "(?i)dist|cd")][1]
+
+ab604_shp <- ab604_shp |>
+  rename(new_cddist = !!sym(dist_col))
+
+cd_new_joined <- ab604_shp |>
+  left_join(ab604_results, by = "new_cddist") |>
+  mutate(
+    plan = "AB 604 Map",
+    dem_plot_share = dem_share_new
+  )
+
+if (is.null(combined_sf)) {
+  combined_sf <- cd_new_joined
+} else {
+  combined_sf <- bind_rows(combined_sf, cd_new_joined)
+}
+
+ggplot(combined_sf) +
+  geom_sf(aes(fill = dem_plot_share), color = NA) +
+  scale_fill_viridis_c(option = "plasma", na.value = "grey85") +
+  facet_wrap(~ plan) +
+  labs(
+    title = "Democratic Two-Party Share: Old Map vs AB 604",
+    fill = "Dem %"
+  ) +
+  theme_minimal() +
+  theme(
+    strip.text = element_text(size = 14, face = "bold"),
+    legend.position = "bottom")
+```

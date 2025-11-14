@@ -3,9 +3,244 @@ title: Gerrymandering Metrics
 format: typst
 ---
 
+```{r}
+library(tidyverse)
+vote_prec_clean <- read_csv("data/vote_prec_clean.csv")
+glimpse(vote_prec_clean)
+```
+
 ### 2024 Election Results and the 2024 District Map
 
+```{r}
+vote_prec_use <- vote_prec_clean |>
+  filter(!str_detect(svprec, "TOT")) |>
+  filter(cddist > 0)
+
+
+vote_prec_use <- vote_prec_use |>
+  mutate(
+    cngdem01 = as.numeric(cngdem01),
+    cngdem02 = as.numeric(cngdem02),
+    cngrep01 = as.numeric(cngrep01),
+    cngrep02 = as.numeric(cngrep02),
+    cngind01 = as.numeric(cngind01)
+  )
+
+district_results <- vote_prec_use |>
+  group_by(cddist) |>
+  summarize(
+    dem_total   = sum(cngdem01 + cngdem02, na.rm = TRUE),
+    rep_total   = sum(cngrep01 + cngrep02, na.rm = TRUE),
+    ind_total   = sum(cngind01, na.rm = TRUE),
+    total_votes = sum(totvote, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  mutate(
+    two_party_total = dem_total + rep_total
+  )
+
+district_results
+
+district_results |>
+  filter(dem_total == 0 | rep_total == 0)
+
+district_two_party <- district_results |>
+  filter(dem_total > 0, rep_total > 0)
+
+district_two_party <- district_two_party |>
+  mutate(
+    dem_share = dem_total / two_party_total
+  )
+
+mean_dem_share   <- mean(district_two_party$dem_share)
+median_dem_share <- median(district_two_party$dem_share)
+mean_median_score <- mean_dem_share - median_dem_share
+
+mean_dem_share
+median_dem_share
+mean_median_score
+```
+
+```{r}
+wasted_votes <- function(votes_A, votes_B) {
+  total  <- votes_A + votes_B
+  needed <- floor(total / 2) + 1
+
+  ifelse(
+    votes_A > votes_B,
+    votes_A - needed,  
+    votes_A            
+  )
+}
+
+district_two_party <- district_two_party |>
+  mutate(
+    wasted_dem = wasted_votes(dem_total, rep_total),
+    wasted_rep = wasted_votes(rep_total, dem_total)
+  )
+
+total_wasted_dem <- sum(district_two_party$wasted_dem)
+total_wasted_rep <- sum(district_two_party$wasted_rep)
+total_two_party_votes <- sum(district_two_party$two_party_total)
+
+efficiency_gap <- (total_wasted_rep - total_wasted_dem) / total_two_party_votes
+
+total_wasted_dem
+total_wasted_rep
+efficiency_gap
+```
 
 
 ### 2024 Election Results and the proposed 2025 District Map
 
+
+```{r}
+library(sf)
+
+sr_sov <- read_csv("data/state_g24_sov_data_by_g24_srprec.csv")
+names(sr_sov)
+```
+
+
+```{r}
+dem_cols <- c("CNGDEM01", "CNGDEM02")      
+rep_cols <- c("CNGREP01", "CNGREP02")      
+
+sr_votes <- sr_sov |>
+  mutate(
+    across(
+      all_of(c(dem_cols, rep_cols)),
+      ~ as.numeric(gsub(",", "", .x))  
+    )
+  ) |>
+  mutate(
+    dem_total = rowSums(across(all_of(dem_cols)), na.rm = TRUE),
+    rep_total = rowSums(across(all_of(rep_cols)), na.rm = TRUE)
+  ) |>
+  select(SRPREC, dem_total, rep_total)
+```
+
+```{r}
+sr_shp <- st_read("data/shapefiles/srprec_state_g24_v01_shp/srprec_state_g24_v01_shp.shp")
+
+names(sr_shp)
+```
+
+```{r}
+sr_shp <- sr_shp |>
+  st_transform(3310) |>      
+  st_set_precision(1) |>    
+  st_make_valid() |>     
+  st_collection_extract("POLYGON")
+```
+
+```{r}
+sr_geo <- sr_shp |>
+  left_join(sr_votes, by = "SRPREC")
+```
+
+```{r}
+ab604 <- st_read("data/shapefiles/AB604/AB604.shp")
+
+names(ab604)
+```
+
+```{r}
+ab604 <- ab604 |>
+  rename(
+    new_cddist = DISTRICT
+  ) |>
+  st_transform(3310) |>
+  st_make_valid()
+```
+
+```{r}
+sr_ab_int <- st_intersection(sr_geo, ab604)
+
+sr_ab_int <- sr_ab_int |>
+  mutate(
+    area_part = st_area(geometry)
+  )
+
+sr_areas <- sr_ab_int |>
+  st_drop_geometry() |>
+  group_by(SRPREC) |>
+  summarize(
+    area_sr = sum(as.numeric(area_part), na.rm = TRUE),
+    .groups = "drop"
+  )
+
+sr_ab_int <- sr_ab_int |>
+  left_join(sr_areas, by = "SRPREC") |>
+  mutate(
+    area_part_num = as.numeric(area_part),
+    area_fraction = if_else(area_sr > 0,
+                            area_part_num / area_sr,
+                            0)
+  )
+```
+
+```{r}
+sr_ab_votes <- sr_ab_int |>
+  st_drop_geometry() |>
+  mutate(
+    dem_alloc = dem_total * area_fraction,
+    rep_alloc = rep_total * area_fraction
+  )
+
+ab604_results <- sr_ab_votes |>
+  group_by(new_cddist) |>
+  summarize(
+    dem_total_new = sum(dem_alloc, na.rm = TRUE),
+    rep_total_new = sum(rep_alloc, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  mutate(
+    two_party_total_new = dem_total_new + rep_total_new,
+    dem_share_new       = dem_total_new / two_party_total_new
+  )
+
+ab604_results
+```
+
+```{r}
+write_csv(ab604_results, "data/new_results_area_weighted.csv")
+```
+
+
+```{r}
+ab604_two_party <- ab604_results |>
+  filter(dem_total_new > 0, rep_total_new > 0)
+
+ab604_two_party <- ab604_two_party |>
+  mutate(
+    dem_share_new = dem_total_new / (dem_total_new + rep_total_new)
+  )
+
+mean_dem_share_new   <- mean(ab604_two_party$dem_share_new)
+median_dem_share_new <- median(ab604_two_party$dem_share_new)
+mean_median_score_new <- mean_dem_share_new - median_dem_share_new
+
+mean_dem_share_new
+median_dem_share_new
+mean_median_score_new
+```
+
+
+```{r}
+ab604_two_party <- ab604_two_party |>
+  mutate(
+    wasted_dem_new = wasted_votes(dem_total_new, rep_total_new),
+    wasted_rep_new = wasted_votes(rep_total_new, dem_total_new)
+  )
+
+total_wasted_dem_new <- sum(ab604_two_party$wasted_dem_new)
+total_wasted_rep_new <- sum(ab604_two_party$wasted_rep_new)
+total_two_party_votes_new <- sum(ab604_two_party$dem_total_new + ab604_two_party$rep_total_new)
+
+efficiency_gap_new <- (total_wasted_rep_new - total_wasted_dem_new) / total_two_party_votes_new
+
+total_wasted_dem_new
+total_wasted_rep_new
+efficiency_gap_new
+```

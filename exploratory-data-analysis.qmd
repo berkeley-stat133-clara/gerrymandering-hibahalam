@@ -3,26 +3,103 @@ title: Exploratory Data Analysis
 format: typst
 ---
 
+```{r}
+library(tidyverse)
+vote_prec_clean <- read_csv("data/vote_prec_clean.csv")
+```
+
 ### Question 1
 
-Put your question here.
+What is the range and distribution of total votes cast per precinct?
 
 ### Answer 1
 
-Put your answer here.
+```{r}
+dont_sum <- c("fips","county_fips","year","district","geoid","precinct_code","total_votes")
+vote_cols <- vote_prec_clean |>
+  select(where(is.numeric)) |>
+  select(-any_of(dont_sum)) |>
+  names()
+
+vote_prec_clean <- vote_prec_clean |>
+  mutate(total_votes = rowSums(across(all_of(vote_cols)), na.rm = TRUE))
+
+vote_prec_clean_2 <- vote_prec_clean |>
+    select(svprec, total_votes)
+
+summary(vote_prec_clean_2$total_votes)
+
+ggplot(vote_prec_clean_2 |>
+     filter(total_votes < 10000), aes(x = total_votes)) +
+  geom_histogram(bins = 50, fill = "steelblue", color = "white") +
+  labs(
+    title = "Distribution of Total Votes per Precinct (2024)",
+    x = "Total Votes per Precinct",
+    y = "Number of Precincts"
+  ) +
+  theme_minimal(base_size = 14)
+```
 
 ### Question 2
 
-Put your question here.
+Which precincts had the closest races between the top two candidates?
 
 ### Answer 2
 
-Put your answer here.
+```{r}
+closest_races <- vote_prec_clean |>
+    pivot_longer(cols = where(is.numeric), names_to = "candidate", values_to = "votes") |>
+    group_by(svprec) |>
+    arrange(desc(votes), .by_group = TRUE) |>
+    slice_head(n = 2) |>
+    summarise(margin = diff(votes), total = sum(votes)) |>
+    arrange(margin)
+
+closest_races_clean <- closest_races |>
+    mutate(margin = abs(margin)) |>
+    filter(!is.na(margin), margin > 0, margin < 10000)
+
+head(closest_races, 10)
+
+ggplot(closest_races_clean, aes(x = margin)) +
+  geom_histogram(bins = 50, fill = "steelblue", color = "white", alpha = 0.9) +
+  labs(
+    title = "Margins of Victory by Precinct (2024)",
+    x = "Vote Margin (Top Two Candidates)",
+    y = "Number of Precincts"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    panel.grid.minor = element_blank()
+  )
+```
 
 ### Question 3
 
-Put your question here.
+Are smaller precincts more competitive?
 
 ### Answer 3
 
-Put your answer here.
+```{r}
+competition <- vote_prec_clean |>
+  select(svprec, total_votes) |>
+  left_join(closest_races, by = "svprec")
+
+competition <- competition |>
+  mutate(margin = abs(margin)) |>
+  filter(total_votes > 0, total_votes < 10000, margin < 10000)
+
+ggplot(competition, aes(x = total_votes, y = margin)) +
+  geom_point(alpha = 0.3, color = "steelblue") +
+  geom_smooth(method = "lm", color = "red", se = FALSE) +
+  labs(
+    title = "Are Smaller Precincts More Competitive?",
+    x = "Total Votes per Precinct",
+    y = "Margin of Victory (Top Two Candidates)"
+  ) +
+  theme_minimal(base_size = 14)
+
+cor_result <- cor(competition$total_votes, competition$margin, use = "complete.obs")
+cor_result
+```

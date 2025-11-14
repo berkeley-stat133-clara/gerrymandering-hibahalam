@@ -3,3 +3,66 @@ title: Data Cleaning
 format: typst
 ---
 
+```{r}
+library(tidyverse)
+library(janitor)
+```
+
+```{r}
+vote_prec <- read_csv("/Users/hibahalam/Desktop/stat133/gerrymandering-hibahalam/data/g24_sov_by_g24_svprec.csv")
+```
+
+
+```{r}
+head(vote_prec)
+```
+
+
+```{r}
+vote_prec <- vote_prec |>
+  clean_names()
+vote_cols <- vote_prec |>
+     select(matches("vote|ballot|tot|^d_|^r_")) |>
+     names()
+vote_prec <- vote_prec |>
+    mutate(across(all_of(vote_cols), ~ gsub(",", "", .))) |>
+    mutate(across(all_of(vote_cols), as.numeric))
+
+```
+
+
+```{r}
+if ("svprec" %in% names(vote_prec)) {
+  vote_prec <- vote_prec |>
+     mutate(svprec = as.character(svprec))
+}
+```
+
+
+```{r}
+vote_prec <- vote_prec |>
+     select(where(~ !all(is.na(.x))))
+```
+
+
+```{r}
+dup_ids <- vote_prec |>
+     count(svprec) |>
+     filter(n > 1)
+
+print(dup_ids)
+```
+
+
+```{r}
+vote_prec <- vote_prec |>
+    distinct(svprec, .keep_all = TRUE)
+```
+
+
+```{r}
+write_csv(
+  vote_prec,
+  "data/vote_prec_clean.csv"
+)
+```
